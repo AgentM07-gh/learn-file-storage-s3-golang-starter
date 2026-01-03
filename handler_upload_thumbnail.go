@@ -1,10 +1,11 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -48,13 +49,48 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	defer file.Close()
 
 	contentType := header.Header.Get("Content-Type")
+	var fileExtension string
 
-	fileBytes, err := io.ReadAll(file)
+	switch contentType {
+	case "text/html":
+		fileExtension = ".html"
+	case "image/jpeg":
+		fileExtension = ".jpeg"
+	case "image/png":
+		fileExtension = ".png"
+	case "application/pdf":
+		fileExtension = ".pdf"
+	case "application/json":
+		fileExtension = ".json"
+	case "video/mp4":
+		fileExtension = ".mp4"
+	case "audio/mp3":
+		fileExtension = ".mp3"
+	default:
+		fileExtension = ".txt"
+	}
+
+	filePath := filepath.Join(cfg.assetsRoot, videoIDString+fileExtension)
+
+	newFile, err := os.Create(filePath)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error reading file into buffer", err)
+		respondWithError(w, http.StatusInternalServerError, "Could not create file", err)
 		return
 	}
-	file64 := base64.StdEncoding.EncodeToString(fileBytes)
+	defer newFile.Close()
+	/*
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Error reading file into buffer", err)
+			return
+		}
+	*/
+	if _, err := io.Copy(newFile, file); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not write to file", err)
+		return
+	}
+
+	//	file64 := base64.StdEncoding.EncodeToString(fileBytes)
 
 	videoData, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -71,7 +107,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		}
 	*/
 
-	videoURL := fmt.Sprintf("data:%s;base64,%s", contentType, file64)
+	videoURL := fmt.Sprintf("http://localhost:%s/assets/%s%s", cfg.port, videoIDString, fileExtension)
 	videoData.ThumbnailURL = &videoURL
 
 	err = cfg.db.UpdateVideo(videoData)
