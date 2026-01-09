@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -84,9 +89,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	aspectRatio, err := getVideoAspectRatio(videoFile.Name())
+
+	var aspectRatioString string
+
+	if aspectRatio == "16:9" {
+		aspectRatioString = "landscape/"
+	} else if aspectRatio == "9:16" {
+		aspectRatioString = "portrait/"
+	} else {
+		aspectRatioString = "other/"
+	}
+
 	name := make([]byte, 32)
 	rand.Read(name)
-	fileName := hex.EncodeToString(name) + ".mp4"
+	fileName := aspectRatioString + hex.EncodeToString(name) + ".mp4"
 
 	params := &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
@@ -113,3 +130,86 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	respondWithJSON(w, http.StatusOK, videoMetaData)
 }
+
+func getVideoAspectRatio(filePath string) (string, error) {
+
+	var outBuff bytes.Buffer
+
+	videoData := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+
+	videoData.Stdout = &outBuff
+
+	err := videoData.Run()
+	if err != nil {
+		return "", err
+	}
+
+	type Stream struct {
+		CodecType string `json:"codec_type"`
+		Width     int    `json:"width"`
+		Height    int    `json:"height"`
+	}
+
+	type ProbeResult struct {
+		Streams []Stream `json:"streams"`
+	}
+
+	var results ProbeResult
+	err = json.Unmarshal(outBuff.Bytes(), &results)
+	if err != nil {
+		return "", err
+	}
+
+	height := 0
+	width := 0
+
+	for _, result := range results.Streams {
+		if result.CodecType == "video" {
+			height = result.Height
+			width = result.Width
+		}
+	}
+	if height == 0 || width == 0 {
+		return "", errors.New("No valid videos found")
+	}
+
+	ratio := float64(width) / float64(height)
+
+	landscapeTarget := 16.0 / 9.0
+	portraitTarget := 9.0 / 16.0
+	epsilon := 0.01
+
+	if math.Abs(ratio-landscapeTarget) < epsilon {
+		return "16:9", nil
+	} else if math.Abs(ratio-portraitTarget) < epsilon {
+		return "9:16", nil
+	} else {
+		return "other", nil
+	}
+
+	/*
+	   gcd := gcdUsingEuclidean(width, height)
+	   aw := width / gcd
+	   ah := height / gcd
+
+	   	if aw == 16 && ah == 9 {
+	   		return "16:9", nil
+	   	} else if aw == 9 && ah == 16 {
+
+	   		return "9:16", nil
+	   	} else {
+
+	   		return "other", nil
+	   	}
+	*/
+}
+
+/*
+func gcdUsingEuclidean(a, b int) int {
+	for b != 0 {
+		// This line simultaneously updates a to b, and b to the remainder of a / b
+		a, b = b, a%b
+	}
+	return a // When b is 0, a holds the GCF
+}
+*/
