@@ -20,7 +20,7 @@ import (
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
-	const maxMemory = 10 << 30
+	const maxMemory = 1 << 30
 
 	defer r.Body.Close()
 
@@ -63,14 +63,14 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	contentType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil || (contentType != "video/mp4") {
-		respondWithError(w, http.StatusInternalServerError, "Invalid Content-Type", err)
+		respondWithError(w, http.StatusNotAcceptable, "Invalid Content-Type", err)
 		return
 	}
 
 	videoFile, err := os.CreateTemp("", "tubely-upload.mp4")
 
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error retrieving file", err)
+		respondWithError(w, http.StatusBadRequest, "Error creating file", err)
 		return
 	}
 
@@ -101,6 +101,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		aspectRatioString = "other/"
 	}
 
+	newFilePath, err := processVideoForFastStart(videoFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could process file", err)
+		return
+	}
+
+	newFile, err := os.Open(newFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could process file", err)
+		return
+	}
+	defer os.Remove(newFilePath)
+	defer newFile.Close()
+
 	name := make([]byte, 32)
 	rand.Read(name)
 	fileName := aspectRatioString + hex.EncodeToString(name) + ".mp4"
@@ -108,7 +122,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	params := &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileName,
-		Body:        videoFile,
+		Body:        newFile,
 		ContentType: &contentType,
 	}
 
@@ -186,30 +200,22 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	} else {
 		return "other", nil
 	}
-
-	/*
-	   gcd := gcdUsingEuclidean(width, height)
-	   aw := width / gcd
-	   ah := height / gcd
-
-	   	if aw == 16 && ah == 9 {
-	   		return "16:9", nil
-	   	} else if aw == 9 && ah == 16 {
-
-	   		return "9:16", nil
-	   	} else {
-
-	   		return "other", nil
-	   	}
-	*/
 }
 
-/*
-func gcdUsingEuclidean(a, b int) int {
-	for b != 0 {
-		// This line simultaneously updates a to b, and b to the remainder of a / b
-		a, b = b, a%b
+func processVideoForFastStart(filePath string) (string, error) {
+	var outputFilePath string
+
+	outputFilePath = filePath + ".processing"
+
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	if err != nil {
+		errorString := fmt.Sprintf("ffmpeg failed with error: %v\n and stderr: %s\n", err, stderr.String())
+		return "", errors.New(errorString)
 	}
-	return a // When b is 0, a holds the GCF
+
+	return outputFilePath, err
 }
-*/
